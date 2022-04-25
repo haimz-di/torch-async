@@ -1,17 +1,17 @@
-from setuptools import setup, find_packages, _loa
+from setuptools import setup, find_packages
 
 with open('requirements.txt') as r:
     requirements = r.read().splitlines()
 
 setup(
     name='torch-async',
-    version='0.1dev',
+    version='0.1.dev',
     description='Torch Async is an asynchronous data loader and model trainer for PyTorch.',
     author='Guillaume Sicard et al.',
     author_email='guitch21@gmail.com',
     url='https://github.com/gsicard/torch-async',
     license='Apache-2.0',
-    packages=find_packages(exclude=['tests*']),
+    packages=find_packages(exclude=['tests*', 'examples*']),
     # TODO: write long description
     long_description='''
     ''',
