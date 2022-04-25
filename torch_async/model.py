@@ -32,6 +32,7 @@ class Phase(Enum):
     VALID_EPOCH_END = 10
 
 
+# TODO: add example from MNIST /ImageNet... and benchmark vs vanilla torch-vision
 # TODO: child processes do not exit nicely from keyboard interrupt and stay in memory
 # TODO: add support for callbacks (maybe dedicated process)
 # TODO: make compatible for generic metrics
