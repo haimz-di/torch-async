@@ -33,8 +33,7 @@ class Phase(Enum):
 
 
 # TODO: add example from MNIST /ImageNet... and benchmark vs vanilla torch-vision
-# TODO: child processes do not exit nicely from keyboard interrupt and stay in memory
-# TODO: add support for callbacks (maybe dedicated process)
+# TODO: child processes might not exit nicely from keyboard interrupt
 # TODO: make compatible for generic metrics
 # TODO: test torchmetrics
 # TODO: implement predict and evaluate functions

@@ -5,7 +5,7 @@ with open('requirements.txt') as r:
 
 setup(
     name='torch-async',
-    version='0.1.dev',
+    version='0.1.alpha',
     description='Torch Async is an asynchronous data loader and model trainer for PyTorch.',
     author='Guillaume Sicard et al.',
     author_email='guitch21@gmail.com',
