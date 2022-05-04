@@ -12,11 +12,15 @@ setup(
     url='https://github.com/gsicard/torch-async',
     license='Apache-2.0',
     packages=find_packages(exclude=['tests*', 'examples*']),
-    # TODO: write long description
     long_description='''
+    Torch Async performs asynchronous data loading and model training for PyTorch.
+    It was design to overcome the limitations of the sequential nature of PyTorch standard training loop by removing locks in the data loading and model training process.
+    There are two classes to be subclassed:
+    - the `ChunkDataloader` class: loads the data by chunks to be processed by the model's logic
+    - the `Model` class: derived from PyTorch's `Module` class and provides a `fit` method
     ''',
     long_description_content_type='text/markdown',
-    keywords=['deep learning', 'pytorch', 'AI'],
+    keywords=['data science', 'AI', 'machine learning', 'deep learning', 'pytorch'],
     python_requires='>=3.7',
     install_requires=requirements,
     project_urls={

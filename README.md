@@ -1,9 +1,12 @@
 # torch-async
 Torch Async performs asynchronous data loading and model training for PyTorch.
 
-It was design to overcome the limitations of the sequential nature of PyTorch standard training loop by removing locks in the data loading and model training process.
+It was designed to overcome the limitations of the sequential nature of PyTorch standard training loop by removing locks in the data loading and model training process.
 
-
+There are two classes to be subclassed:
+- the `ChunkDataloader` class: loads the data by chunks to be processed by the model's logic
+- the `Model` class: derived from PyTorch's `Module` class and provides a `fit` method
+ 
 <!-- TOC -->
 - [1. Description](#1-description)
 - [2. Installation](#2-installation)
@@ -16,15 +19,16 @@ It was design to overcome the limitations of the sequential nature of PyTorch st
 ## 1. Description
 
 The standard data loading and training step is displayed in Figure 1 (left): 
-1) loading samples from hardware storage (SSD, network storage...) to CPU memory,
-2) pre-processing data batch (unpacking data, normalization...) and moving it to GPU memory,
-3) perform training step on the model.
-As each step is performed in a synchronous way (even if steps 1 and 2 use the multi-processed dataloader from PyTorch the batch collate and training steps are done synchronously), locks occur in the process and resources are left unused.
+1) loading a batch of samples from hardware storage (SSD, network storage...) to CPU memory,
+2) pre-processing a data batch (unpacking data, normalization...) and moving it to GPU memory,
+3) performing a training step on the model.
 
-What Torch Async does is to decouple these different steps by running them from different processes as shown in Figure 1 (right):
-1) loading samples from hardware storage (SSD, network storage...) to the CPU buffer,
-2) pre-processing data batch (unpacking data, normalization...) and moving it to the GPU buffer,
-3) perform training step on the model with data from the GPU buffer.
+As each step is performed in a synchronous way (even if steps 1 and 2 can be achieved using multiple workers, the batch collate and training steps are done synchronously), locks occur in the process and resources are left unused.
+
+What Torch Async does is to decouple these different steps by running them using different processes as shown in Figure 1 (right):
+1) loading a chunk of samples (i.e. multiple batches) from hardware storage (SSD, network storage...) to a CPU buffer,
+2) pre-processing a data chunk and moving it to a GPU buffer,
+3) performing multiple training steps on the model with the data chunk from the GPU buffer.
 
 <p align="center">
     <img src="images/sequential_process.svg" />
@@ -36,16 +40,16 @@ Figure 1: Standard sequential training flow (left) and decoupled multi-process t
 
 A more detailed explanation on how this asynchronous data loading and model training is performed is shown in Figure 2.
 Five queues are used to sent messages:
-- `loadable chunks`: is filled with the list of data chunks to be loaded and processed,
-- `free CPU buffer`: contains the indices of free CPU buffers which can be loaded with new data chunks,
+- `loadable chunks`: is initialized with the list of data chunks to be loaded and processed,
+- `free CPU buffer`: contains the indices of free CPU buffers which can be filled with new data chunks,
 - `process CPU buffer`: once a data chunk is loaded to a CPU buffer, a message is sent via this queue to notify that this data chunk is ready to be processed,
-- `free GPU buffer`: contains the indices of free GPU buffer which can be loaded with data from a CPU buffer,
-- `process GPU buffer`: once a data chunk is loaded to a GPU buffer, a message is sent via this queue to notify that this data chunk is ready to be processed.
+- `free GPU buffer`: contains the indices of free GPU buffer which can be filled with data from a CPU buffer,
+- `process GPU buffer`: once a data chunk is moved to a GPU buffer, a message is sent via this queue to notify that this data chunk is ready to be processed.
 
 Three asynchronous processes use the above queues to communicate:
-1) the `data loader` process reads messages from the `loadable chunks` queue (which lists the chunks to load for each epoch) and the `free CPU buffer` queue (list of available CPU buffers). Once a chunk is loaded into a CPU buffer, a message is sent to the `process CPU buffer` queue,
-2) the `data mover` process reads messages from the `process CPU buffer` queue and moves the data to a free GPU buffer using the `free GPU buffer` queue. Once a chunk is moved to a GPU buffer, a message is sent to the `free CPU buffer` queue and the `process GPU buffer` queue, 
-3) the `GPU processing` process reads messages from the `process GPU buffer` queue and once the chunk has been processed writes it to the `free GPU buffer` queue.
+1) the `data loader` process reads messages from the `loadable chunks` queue and the `free CPU buffer` queue. Once a chunk has been loaded into a CPU buffer, a message is sent to the `process CPU buffer` queue,
+2) the `device transfer` process reads messages from the `process CPU buffer` queue and moves the data to a free GPU buffer using the `free GPU buffer` queue. Once a chunk has been moved to a GPU buffer, a message is sent to the `free CPU buffer` queue and the `process GPU buffer` queue, 
+3) the `GPU processing` process reads messages from the `process GPU buffer` queue and once all batches from the chunk have been used for training, it writes it to the `free GPU buffer` queue.
 
 <p align="center">
     <img src="images/async_flow.svg" />
@@ -80,8 +84,10 @@ from torch_async import Model
 
 class MyModel(Model):
     def __init__(self):
+        ...
 
     def forward(self, x):
+        ...
 ```
 
 Once the model has been created and the training and validation chunk dataloaders have been subclassed, the training can be started by simply running:

@@ -1,14 +1,19 @@
+import warnings
+
 from torch.nn import Module
 from enum import Enum
 
 from random import sample
 from types import SimpleNamespace
 
-from typing import List, Optional, Dict, Tuple
+from typing import List, Optional, Tuple, Callable
+from torch.types import _dtype, _device
 
 import cupy
 import torch
 from torch import from_numpy, as_tensor, device
+from torch.optim import Optimizer
+from torch.nn.modules.loss import _Loss
 
 from time import time
 
@@ -34,16 +39,11 @@ class Phase(Enum):
 
 # TODO: add example from MNIST /ImageNet... and benchmark vs vanilla torch-vision
 # TODO: child processes might not exit nicely from keyboard interrupt
-# TODO: make compatible for generic metrics
-# TODO: test torchmetrics
-# TODO: implement predict and evaluate functions
-# TODO: add support for memory pinning (both CPU and GPU)
-# TODO: add support for resuming from existing checkpoint
 class Model(Module):
     """
-    Class designed to manage model training.
+    Class designed to manage model training, derives from PyTorch's `Module` class.
     The underlying logic aims at removing data locks by using three asynchronous processes:
-    - one for loading the data from disk to CPU memory
+    - one for loading the data from hardware storage to CPU memory
     - one for transferring data from GPU to CPU memory
     - one for loading batches of data from GPU memory and training the model
     Important note: this logic was designed for GPU training and requires a CUDA-compatible device to run.
@@ -65,9 +65,9 @@ class Model(Module):
 
         self.file_index_queue = None
         self.free_cpu_buffer_index_queue = None
-        self.cpu_buffer_index_process_queue = None
+        self.process_cpu_buffer_index_queue = None
         self.free_gpu_buffer_index_queue = None
-        self.gpu_buffer_index_process_queue = None
+        self.process_gpu_buffer_index_queue = None
         self.end_epoch_queue = None
 
         self.num_buffers = dict()
@@ -76,7 +76,16 @@ class Model(Module):
         # TODO: might not be necessary. To be tested and removed if found unnecessary
         self.share_memory()
 
-    def compile(self, optimizer, loss, metrics=None):
+    def compile(self, optimizer: Optimizer, loss: _Loss, metrics: Optional[List[Callable]] = None):
+        """
+        Define the optimizer, loss and metrics used for training. The optimizer needs to be initialized with the model's parameters before being passed as a parameter to `compile`.
+        :param optimizer: optimizer for the model training
+        :param loss: loss function for the model training
+        :param metrics: list of metrics to be used for validation
+        :return:
+        """
+        if metrics is not None:
+            warnings.WarningMessage('Custom metrics are not yet supported')
         self.optimizer = optimizer
         self.loss_function = loss
         self.metrics = metrics
@@ -95,25 +104,30 @@ class Model(Module):
             cpu_sample_size=None,
             gpu_sample_size=None):
         """
-        :param train_dataloader:
-        :param epochs:
-        :param valid_dataloader:
-        :param batch_size:
-        :param lr_halving_step:
-        :param bs_doubling_step:
-        :param callbacks:
-        :param transform:
+        The `fit` method is used to train the model using the provided dataloaders and training parameters.
+        :param train_dataloader: dataloader for training data
+        :param epochs: number of epochs to train the model for
+        :param valid_dataloader: dataloader for the validation data
+        :param batch_size: initial batch size
+        :param lr_halving_step: number of epochs for the learning rate to be halved
+        :param bs_doubling_step: number of epochs for the batch size to be double
+        :param callbacks: list of callbacks
+        :param transform: list of transforms
         :param num_cpu_buffers: number of data chunks to simultaneously keep in GPU memory
         :param num_gpu_buffers: number of data chunks to simultaneously keep in GPU memory
-        :param cpu_sample_size:
-        :param gpu_sample_size:
+        :param cpu_sample_size: size of a sample in CPU memory
+        :param gpu_sample_size: size of a sample in GPU memory
         """
+        if callbacks is not None or transform is not None:
+            warnings.WarningMessage('Callbacks and transforms are not yet supported')
+
         self.train_dataloader = train_dataloader
         self.valid_dataloader = valid_dataloader
         self.epochs = epochs
         self.batch_size = batch_size
         self.lr_halving_step = lr_halving_step
         self.bs_doubling_step = bs_doubling_step
+
         max_samples_per_buffer = np.max(train_dataloader.num_items())
         sample_size = train_dataloader.sample_size()
 
@@ -123,30 +137,30 @@ class Model(Module):
         for data_type in ['features', 'num_samples', 'labels']:
             self.buffer[data_type] = dict()
 
-        for device in ['cpu', 'cuda']:
-            self.buffer['features'][device] = self.create_buffer(buffer_size=self.num_buffers[device],
-                                                                 chunk_size=(max_samples_per_buffer, sample_size),
-                                                                 dtype=torch.uint8,
-                                                                 device=device)
-            self.buffer['num_samples'][device] = self.create_buffer(buffer_size=self.num_buffers[device],
-                                                                    chunk_size=(1,),
-                                                                    dtype=torch.int32,
-                                                                    device=device)
-            self.buffer['labels'][device] = self.create_buffer(buffer_size=self.num_buffers[device],
-                                                               chunk_size=(max_samples_per_buffer, 1),
-                                                               dtype=torch.uint8,
-                                                               device=device)
+        for buffer_device in ['cpu', 'cuda']:
+            self.buffer['features'][buffer_device] = self.create_buffer(buffer_size=self.num_buffers[buffer_device],
+                                                                        chunk_size=(max_samples_per_buffer, sample_size),
+                                                                        dtype=torch.uint8,
+                                                                        device=device(buffer_device))
+            self.buffer['num_samples'][buffer_device] = self.create_buffer(buffer_size=self.num_buffers[buffer_device],
+                                                                           chunk_size=(1,),
+                                                                           dtype=torch.int32,
+                                                                           device=device(buffer_device))
+            self.buffer['labels'][buffer_device] = self.create_buffer(buffer_size=self.num_buffers[buffer_device],
+                                                                      chunk_size=(max_samples_per_buffer, 1),
+                                                                      dtype=torch.uint8,
+                                                                      device=device(buffer_device))
 
         self.file_index_queue = mp.Queue()
         self.free_cpu_buffer_index_queue = mp.Queue()
-        self.cpu_buffer_index_process_queue = mp.Queue()
+        self.process_cpu_buffer_index_queue = mp.Queue()
         self.free_gpu_buffer_index_queue = mp.Queue()
-        self.gpu_buffer_index_process_queue = mp.Queue()
+        self.process_gpu_buffer_index_queue = mp.Queue()
 
         self.run()
 
     @staticmethod
-    def create_buffer(buffer_size: int, chunk_size: Tuple[int, ...], dtype, device):
+    def create_buffer(buffer_size: int, chunk_size: Tuple[int, ...], dtype: _dtype, device: _device):
         """
         Creates a buffer of the specified size and type on the specified device.
         :param buffer_size: size of the buffer
@@ -165,16 +179,14 @@ class Model(Module):
         """
         Runs the model training with asynchronous processes:
         - data_loader: loads data chunks to a buffer in GPU memory
-        - data_mover: moves datachunks from CPU memory to GPU memory
+        - device_transfer: transfers datachunks from CPU memory to GPU memory
         - gpu_process: loads batches from the GPU buffer and trains the model
-        Additionally a process called "process_end_epoch" is dedicated to end-of-epoch callback calls and metric
-        computations.
         The processes inside loops are controlled via several queues:
-        - file_index: contains the indexes of the NumPy mmap files to load to the buffer
-        - free_cpu_buffer_index: contains the cpu buffer indexes where files have already been used and can hold new data
-        - free_gpu_buffer_index: contains the gpu buffer indexes where files have already been used and can hold new data
-        - gpu_buffer_index_process: contains the gpu buffer indexes where files have been loaded for training
-        - end_epoch: a message is sent to this queue at the end of each epoch
+        - file_index: indexes of the data chunks to load to the buffer
+        - free_cpu_buffer_index: cpu buffer indexes where files have already been used and can hold new data
+        - process_cpu_buffer_index: cpu buffer indexes to be processed and moved to GPU
+        - free_gpu_buffer_index: gpu buffer indexes where files have already been used and can hold new data
+        - process_gpu_buffer_index: gpu buffer indexes to be processed and used for training
         :return:
         """
         for i in range(self.num_buffers['cpu']):
@@ -186,7 +198,7 @@ class Model(Module):
         data_loader_process = mp.Process(target=self.data_loader)
         data_loader_process.start()
 
-        data_mover_process = mp.Process(target=self.data_mover)
+        data_mover_process = mp.Process(target=self.device_transfer)
         data_mover_process.start()
 
         training_loop_process = mp.Process(target=self.training_loop)
@@ -224,9 +236,9 @@ class Model(Module):
 
     def data_loader(self):
         """
-        Method that loads NumPy mmap files from disk to GPU memory. It reads file indexes from the file_index queue
-        and buffer indexes from the buffer_index_loading queue and fills the buffer_index_process queue with the buffer
-        indexes where the files have been loaded.
+        Process that loads data chunks to CPU memory. It reads file indexes from the file_index queue
+        and buffer indexes from the free_cpu_buffer_index queue and fills the process_cpu_buffer_index queue
+        with the buffer indexes where the files have been loaded.
         :return:
         """
         print(self)
@@ -239,7 +251,7 @@ class Model(Module):
             action = file_index_queue_object.action
 
             if not hasattr(file_index_queue_object, 'index'):
-                self.cpu_buffer_index_process_queue.put(file_index_queue_object)
+                self.process_cpu_buffer_index_queue.put(file_index_queue_object)
 
                 if action == Phase.TRAIN_END:
                     break
@@ -254,7 +266,7 @@ class Model(Module):
                 else:
                     raise ValueError(f'Unknown action for data_loader process: {action}')
 
-                self.cpu_buffer_index_process_queue.put(SimpleNamespace(action=action, index=cpu_buffer_index))
+                self.process_cpu_buffer_index_queue.put(SimpleNamespace(action=action, index=cpu_buffer_index))
 
     def load_to_cpu_buffer(self, dataloader: ChunkDataloader, chunk_index: int, buffer_index: int):
         """
@@ -270,13 +282,17 @@ class Model(Module):
         self.buffer['features']['cpu'][buffer_index][:num_items, :] = from_numpy(features)
         self.buffer['labels']['cpu'][buffer_index][:num_items, :] = from_numpy(labels)
 
-    def data_mover(self):
+    def device_transfer(self):
+        """
+        Process that transfers chunks from CPU buffers to GPU buffers.
+        :return:
+        """
         while True:
-            cpu_buffer_index_queue_object = self.cpu_buffer_index_process_queue.get()
+            cpu_buffer_index_queue_object = self.process_cpu_buffer_index_queue.get()
             action = cpu_buffer_index_queue_object.action
 
             if not hasattr(cpu_buffer_index_queue_object, 'index'):
-                self.gpu_buffer_index_process_queue.put(cpu_buffer_index_queue_object)
+                self.process_gpu_buffer_index_queue.put(cpu_buffer_index_queue_object)
 
                 if action == Phase.TRAIN_END:
                     break
@@ -290,9 +306,15 @@ class Model(Module):
                     raise ValueError(f'Unknown action for data_loader process: {action}')
 
                 self.free_cpu_buffer_index_queue.put(cpu_buffer_index)
-                self.gpu_buffer_index_process_queue.put(SimpleNamespace(action=action, index=gpu_buffer_index))
+                self.process_gpu_buffer_index_queue.put(SimpleNamespace(action=action, index=gpu_buffer_index))
 
     def move_buffer(self, cpu_buffer_index, gpu_buffer_index):
+        """
+        Moves a CPU buffer to GPU.
+        :param cpu_buffer_index: index of the CPU buffer to be moved
+        :param gpu_buffer_index: index of the GPU buffer to move to
+        :return:
+        """
         num_items = self.buffer['num_samples']['cpu'][cpu_buffer_index][0]
 
         self.buffer['num_samples']['cuda'][gpu_buffer_index][0] = num_items
@@ -303,8 +325,9 @@ class Model(Module):
 
     def training_loop(self):
         """
-        Process that loads the buffered data and trains the model. It gets buffer indexes from the buffer_index_process
-        queue and fills the buffer_index_loading queue with the same index when the file has been used.
+        Process that loads the buffered data and trains the model. It gets buffer indexes from
+        the process_gpu_buffer_index queue and fills the buffer_index_loading queue with the same index
+        when the file has been used.
         :return:
         """
         batch_size = self.batch_size
@@ -315,7 +338,7 @@ class Model(Module):
         num_correct = 0
 
         while True:
-            gpu_buffer_index_queue_object = self.gpu_buffer_index_process_queue.get()
+            gpu_buffer_index_queue_object = self.process_gpu_buffer_index_queue.get()
             action = gpu_buffer_index_queue_object.action
 
             if action == Phase.TRAIN_EPOCH_BEGIN or action == Phase.VALID_EPOCH_BEGIN:
@@ -363,8 +386,8 @@ class Model(Module):
 
     def gpu_processing(self, action, gpu_buffer_index, batch_size):
         """
-        Train on the data specified by the given buffer index using the given batch size.
-        :param action:
+        Trains on the data specified by the given buffer index using the given batch size.
+        :param action: queue message, can be "TRAIN" or "VALID"
         :param gpu_buffer_index: index of the data in the GPU buffer
         :param batch_size: current batch size
         :return:
