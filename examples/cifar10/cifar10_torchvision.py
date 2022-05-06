@@ -1,4 +1,4 @@
-import time
+from time import time
 
 import torch
 from torch.utils.data import DataLoader
@@ -8,16 +8,16 @@ from torchvision import transforms
 
 
 def train_model(model, dataloaders, criterion, optimizer, num_epochs):
-    since = time.time()
+    print(model)
 
     val_acc_history = []
+    training_start = time()
 
     for epoch in range(num_epochs):
-        print('Epoch {}/{}'.format(epoch, num_epochs - 1))
-        print('-' * 10)
-
         # Each epoch has a training and validation phase
         for phase in ['train', 'val']:
+            epoch_start = time()
+
             if phase == 'train':
                 model.train()  # Set model to training mode
             else:
@@ -47,19 +47,21 @@ def train_model(model, dataloaders, criterion, optimizer, num_epochs):
                 running_loss += loss.item() * inputs.size(0)
                 running_corrects += torch.sum(preds == labels.data)
 
-            epoch_loss = running_loss / len(dataloaders[phase].dataset)
-            epoch_acc = running_corrects.double() / len(dataloaders[phase].dataset)
+            num_items = len(dataloaders[phase].dataset)
+            epoch_loss = running_loss / num_items
+            epoch_acc = running_corrects.double() / num_items
+            duration = time() - epoch_start
 
-            print('{} Loss: {:.4f} Acc: {:.4f}'.format(phase, epoch_loss, epoch_acc))
+            print(f'Epoch {epoch}, {phase} loss: {epoch_loss:.4f}, '
+                  f'{phase} accuracy: {100 * epoch_acc:.2f} ({duration:.2f}s '
+                  f'for {num_items:,} samples {num_items / duration:,.0} fps)', flush=True)
 
             if phase == 'val':
                 val_acc_history.append(epoch_acc)
 
-        print()
-
-    time_elapsed = time.time() - since
+    time_elapsed = time() - training_start
     print('Training complete in {:.0f}m {:.0f}s'.format(time_elapsed // 60, time_elapsed % 60))
-    print('Best val Acc: {:4f}'.format(max(val_acc_history)))
+    print('Best val Acc: {:2f}'.format(100*max(val_acc_history)))
 
     return val_acc_history
 
@@ -86,11 +88,11 @@ if __name__ == '__main__':
     valid_dataset = CIFAR10(root='./data', train=False, transform=transform_valid, download=True)
 
     dataloaders = {
-        'train': DataLoader(train_dataset, batch_size=64, shuffle=True, drop_last=True, pin_memory=True),
-        'val': DataLoader(valid_dataset, batch_size=64, shuffle=True, drop_last=True, pin_memory=True)
+        'train': DataLoader(train_dataset, batch_size=64, num_workers=8, shuffle=True, drop_last=True, pin_memory=True),
+        'val': DataLoader(valid_dataset, batch_size=64, num_workers=8, shuffle=False, drop_last=True, pin_memory=True)
     }
 
-    model = vgg11_bn()
+    model = vgg11_bn(num_classes=10)
     model.cuda()
 
     criterion = torch.nn.CrossEntropyLoss()

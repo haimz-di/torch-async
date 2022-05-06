@@ -71,6 +71,7 @@ class Model(Module):
         self.end_epoch_queue = None
 
         self.num_buffers = dict()
+        self.buffer_dtypes = dict()
         self.buffer = dict()
 
         # TODO: might not be necessary. To be tested and removed if found unnecessary
@@ -102,7 +103,10 @@ class Model(Module):
             num_cpu_buffers: int = 4,
             num_gpu_buffers: int = 4,
             cpu_sample_size=None,
-            gpu_sample_size=None):
+            gpu_sample_size=None,
+            cpu_dtypes=(torch.uint8, torch.int64),
+            gpu_dtypes=(torch.uint8, torch.int64)
+            ):
         """
         The `fit` method is used to train the model using the provided dataloaders and training parameters.
         :param train_dataloader: dataloader for training data
@@ -117,10 +121,14 @@ class Model(Module):
         :param num_gpu_buffers: number of data chunks to simultaneously keep in GPU memory
         :param cpu_sample_size: size of a sample in CPU memory
         :param gpu_sample_size: size of a sample in GPU memory
+        :param cpu_dtypes: data types for (features, labels) on CPU
+        :param gpu_dtypes: data types for (features, labels) on GPU
         """
         if callbacks is not None or transform is not None:
             warnings.WarningMessage('Callbacks and transforms are not yet supported')
-
+        if self.optimizer is None or self.loss_function is None:
+            raise RuntimeError('You must set the optimizer and loss function via the `compile` method` '
+                               'before calling the `fit` method.')
         self.train_dataloader = train_dataloader
         self.valid_dataloader = valid_dataloader
         self.epochs = epochs
@@ -134,21 +142,26 @@ class Model(Module):
         self.num_buffers['cpu'] = num_cpu_buffers
         self.num_buffers['cuda'] = num_gpu_buffers
 
+        self.buffer_dtypes['cpu'] = cpu_dtypes
+        self.buffer_dtypes['cuda'] = gpu_dtypes
+
         for data_type in ['features', 'num_samples', 'labels']:
             self.buffer[data_type] = dict()
 
         for buffer_device in ['cpu', 'cuda']:
+            features_dtype, labels_dtype = self.buffer_dtypes[buffer_device]
+
             self.buffer['features'][buffer_device] = self.create_buffer(buffer_size=self.num_buffers[buffer_device],
                                                                         chunk_size=(max_samples_per_buffer, sample_size),
-                                                                        dtype=torch.uint8,
+                                                                        dtype=features_dtype,
                                                                         device=device(buffer_device))
             self.buffer['num_samples'][buffer_device] = self.create_buffer(buffer_size=self.num_buffers[buffer_device],
                                                                            chunk_size=(1,),
-                                                                           dtype=torch.int32,
-                                                                           device=device(buffer_device))
+                                                                           dtype=labels_dtype,
+                                                                           device=device('cpu'))
             self.buffer['labels'][buffer_device] = self.create_buffer(buffer_size=self.num_buffers[buffer_device],
-                                                                      chunk_size=(max_samples_per_buffer, 1),
-                                                                      dtype=torch.uint8,
+                                                                      chunk_size=(max_samples_per_buffer,),
+                                                                      dtype=torch.int64,
                                                                       device=device(buffer_device))
 
         self.file_index_queue = mp.Queue()
@@ -280,7 +293,7 @@ class Model(Module):
 
         self.buffer['num_samples']['cpu'][buffer_index][0] = num_items
         self.buffer['features']['cpu'][buffer_index][:num_items, :] = from_numpy(features)
-        self.buffer['labels']['cpu'][buffer_index][:num_items, :] = from_numpy(labels)
+        self.buffer['labels']['cpu'][buffer_index][:num_items] = from_numpy(labels)
 
     def device_transfer(self):
         """
@@ -315,13 +328,13 @@ class Model(Module):
         :param gpu_buffer_index: index of the GPU buffer to move to
         :return:
         """
-        num_items = self.buffer['num_samples']['cpu'][cpu_buffer_index][0]
+        num_items = self.buffer['num_samples']['cpu'][cpu_buffer_index].item()
 
         self.buffer['num_samples']['cuda'][gpu_buffer_index][0] = num_items
         self.buffer['features']['cuda'][gpu_buffer_index][:num_items, :] = \
             self.buffer['features']['cpu'][cpu_buffer_index][:num_items, :].cuda()
-        self.buffer['labels']['cuda'][gpu_buffer_index][:num_items, :] = \
-            self.buffer['labels']['cpu'][cpu_buffer_index][:num_items, :].cuda()
+        self.buffer['labels']['cuda'][gpu_buffer_index][:num_items] = \
+            self.buffer['labels']['cpu'][cpu_buffer_index][:num_items].cuda()
 
     def training_loop(self):
         """
@@ -401,22 +414,22 @@ class Model(Module):
         for index in indices:
             index = as_tensor(index, device=device('cuda'))
 
-            features = self.buffer['features']['cuda'][gpu_buffer_index][index]
-            features = as_tensor(cupy.unpackbits(cupy.asarray(features))
-                                       .reshape(features.shape[0], -1), device=device('cuda')).float()
-            labels = self.buffer['labels']['cuda'][gpu_buffer_index][index].float()
+            features = self.buffer['features']['cuda'][gpu_buffer_index][index].float()
+            labels = self.buffer['labels']['cuda'][gpu_buffer_index][index]
 
             outputs = self(features)
             loss = self.loss_function(outputs, labels)
 
-            total_loss += loss.item() * len(labels)
+            _, preds = torch.max(outputs, 1)
+
+            # statistics
+            total_loss += loss.item() * features.size(0)
+            num_correct += torch.sum(preds == labels)
 
             if action == Phase.TRAIN:
                 self.optimizer.zero_grad()
                 loss.backward()
                 self.optimizer.step()
-            elif action == Phase.VALID:
-                num_correct += ((outputs > 0.5).float() == labels).sum().float().item()
 
         return num_items, total_loss, num_correct
 
