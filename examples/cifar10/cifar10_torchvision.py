@@ -49,11 +49,11 @@ def train_model(model, dataloaders, criterion, optimizer, num_epochs):
 
             num_items = len(dataloaders[phase].dataset)
             epoch_loss = running_loss / num_items
-            epoch_acc = running_corrects.double() / num_items
+            epoch_acc = running_corrects / num_items
             duration = time() - epoch_start
 
-            print(f'Epoch {epoch}, {phase} loss: {epoch_loss:.4f}, '
-                  f'{phase} accuracy: {100 * epoch_acc:.2f} ({duration:.2f}s '
+            print(f'Epoch {epoch+1}, {phase} loss: {epoch_loss:.4f}, '
+                  f'{phase} accuracy: {100 * epoch_acc:.2f}% ({duration:.2f}s '
                   f'for {num_items:,} samples {num_items / duration:,.0} fps)', flush=True)
 
             if phase == 'val':
@@ -61,35 +61,38 @@ def train_model(model, dataloaders, criterion, optimizer, num_epochs):
 
     time_elapsed = time() - training_start
     print('Training complete in {:.0f}m {:.0f}s'.format(time_elapsed // 60, time_elapsed % 60))
-    print('Best val Acc: {:2f}'.format(100*max(val_acc_history)))
+    print('Best val Acc: {:.2f}%'.format(100*max(val_acc_history)))
 
     return val_acc_history
 
 
 if __name__ == '__main__':
+    num_workers = 4
     mean = (0.4914, 0.4822, 0.4465)
     std = (0.2471, 0.2435, 0.2616)
 
     transform_train = transforms.Compose(
         [
-            transforms.RandomCrop(32, padding=4),
-            transforms.RandomHorizontalFlip(),
+            # transforms.RandomCrop(32, padding=4),
+            # transforms.RandomHorizontalFlip(),
             transforms.ToTensor(),
-            transforms.Normalize(mean, std),
+            # transforms.Normalize(mean, std),
         ]
     )
     transform_valid = transforms.Compose(
         [
             transforms.ToTensor(),
-            transforms.Normalize(mean, std),
+            # transforms.Normalize(mean, std),
         ]
     )
     train_dataset = CIFAR10(root='./data', train=True, transform=transform_train, download=True)
     valid_dataset = CIFAR10(root='./data', train=False, transform=transform_valid, download=True)
 
     dataloaders = {
-        'train': DataLoader(train_dataset, batch_size=64, num_workers=8, shuffle=True, drop_last=True, pin_memory=True),
-        'val': DataLoader(valid_dataset, batch_size=64, num_workers=8, shuffle=False, drop_last=True, pin_memory=True)
+        'train': DataLoader(train_dataset, batch_size=64, num_workers=num_workers, shuffle=True, drop_last=False,
+                            pin_memory=True),
+        'val': DataLoader(valid_dataset, batch_size=64, num_workers=num_workers, shuffle=False, drop_last=False,
+                          pin_memory=True)
     }
 
     model = vgg11_bn(num_classes=10)

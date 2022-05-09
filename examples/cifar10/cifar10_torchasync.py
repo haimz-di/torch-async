@@ -25,7 +25,6 @@ class VGG11Async(VGG, Model):
     def forward(self, x):
         x = x.reshape(-1, 3, 32, 32)
 
-        # x = x.permute((0, 2, 3, 1))  # convert to HWC
         x = super().forward(x)
 
         return x
@@ -58,10 +57,6 @@ class CIFAR10ChunkDataloader(ChunkDataloader):
 
             targets = np.array(targets)
 
-        # To put in the model's forward method until multi-dimensional arrays are supported:
-        # data = data.reshape(-1, 3, 32, 32)
-        # data = data.transpose((0, 2, 3, 1))  # convert to HWC
-
         return len(data), data, targets
 
     def sample_size(self):
@@ -91,4 +86,4 @@ if __name__ == '__main__':
 
     model.compile(optimizer, criterion)
 
-    model.fit(train_dataloader=train_dataloader, epochs=10, valid_dataloader=valid_dataloader)
+    model.fit(train_dataloader=train_dataloader, epochs=10, valid_dataloader=valid_dataloader, batch_size=64)

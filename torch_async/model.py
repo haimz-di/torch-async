@@ -37,8 +37,6 @@ class Phase(Enum):
     VALID_EPOCH_END = 10
 
 
-# TODO: add example from MNIST /ImageNet... and benchmark vs vanilla torch-vision
-# TODO: child processes might not exit nicely from keyboard interrupt
 class Model(Module):
     """
     Class designed to manage model training, derives from PyTorch's `Module` class.
@@ -79,7 +77,8 @@ class Model(Module):
 
     def compile(self, optimizer: Optimizer, loss: _Loss, metrics: Optional[List[Callable]] = None):
         """
-        Define the optimizer, loss and metrics used for training. The optimizer needs to be initialized with the model's parameters before being passed as a parameter to `compile`.
+        Defines the optimizer, loss and metrics used for training. The optimizer needs to be initialized
+        with the model's parameters before being passed as a parameter to `compile`.
         :param optimizer: optimizer for the model training
         :param loss: loss function for the model training
         :param metrics: list of metrics to be used for validation
@@ -350,6 +349,9 @@ class Model(Module):
         total_loss = 0
         num_correct = 0
 
+        val_acc_history = []
+        training_start = time()
+
         while True:
             gpu_buffer_index_queue_object = self.process_gpu_buffer_index_queue.get()
             action = gpu_buffer_index_queue_object.action
@@ -367,7 +369,8 @@ class Model(Module):
                     self.eval()
             elif action == Phase.TRAIN_EPOCH_END:
                 duration = time()-start
-                print(f'Epoch {epoch}, training loss: {total_loss / num_items:.4f} ({duration:.2f}s '
+                print(f'Epoch {epoch}, training loss: {total_loss / num_items:.4f} '
+                      f'training accuracy: {100 * num_correct / num_items:.2f}% ({duration:.2f}s '
                       f'for {num_items:,} samples, {num_items/duration:,.0} fps)', flush=True)
 
                 # TODO: add ceiling for batch size and decrease lr instead
@@ -382,8 +385,10 @@ class Model(Module):
             elif action == Phase.VALID_EPOCH_END:
                 duration = time() - start
                 print(f'Epoch {epoch}, validation loss: {total_loss / num_items:.4f}, '
-                      f'validation accuracy: {100 * num_correct / num_items:.2f} ({duration:.2f}s '
+                      f'validation accuracy: {100 * num_correct / num_items:.2f}% ({duration:.2f}s '
                       f'for {num_items:,} samples {num_items/duration:,.0} fps)', flush=True)
+
+                val_acc_history.append(100 * num_correct / num_items)
             elif action == Phase.TRAIN or action == Phase.VALID:
                 gpu_buffer_index = gpu_buffer_index_queue_object.index
 
@@ -394,8 +399,11 @@ class Model(Module):
                 num_correct += num_correct_chunk
 
                 self.free_gpu_buffer_index_queue.put(gpu_buffer_index)
+
             elif action == Phase.TRAIN_END:
-                break
+                time_elapsed = time() - training_start
+                print('Training complete in {:.0f}m {:.0f}s'.format(time_elapsed // 60, time_elapsed % 60))
+                print('Best val Acc: {:.2f}%'.format(100 * max(val_acc_history)))
 
     def gpu_processing(self, action, gpu_buffer_index, batch_size):
         """
@@ -405,11 +413,14 @@ class Model(Module):
         :param batch_size: current batch size
         :return:
         """
+        is_training = action == Phase.TRAIN
         num_items = self.buffer['num_samples']['cuda'][gpu_buffer_index].item()
-        indices = self.shuffled_indices(num_items, batch_size)
+        indices = self.batch_indices(num_items, batch_size, shuffle=is_training)
 
         total_loss = 0
         num_correct = 0
+
+        # print('DEBUG: gpu_processing, self.training =', [[m.training for m in module.children()] for module in self.children()])
 
         for index in indices:
             index = as_tensor(index, device=device('cuda'))
@@ -417,36 +428,39 @@ class Model(Module):
             features = self.buffer['features']['cuda'][gpu_buffer_index][index].float()
             labels = self.buffer['labels']['cuda'][gpu_buffer_index][index]
 
+            self.optimizer.zero_grad()
+
             outputs = self(features)
             loss = self.loss_function(outputs, labels)
 
             _, preds = torch.max(outputs, 1)
 
+            if is_training:
+                loss.backward()
+                self.optimizer.step()
+
             # statistics
             total_loss += loss.item() * features.size(0)
             num_correct += torch.sum(preds == labels)
 
-            if action == Phase.TRAIN:
-                self.optimizer.zero_grad()
-                loss.backward()
-                self.optimizer.step()
-
         return num_items, total_loss, num_correct
 
     @staticmethod
-    def shuffled_indices(num_items, batch_size):
+    def batch_indices(num_items, batch_size, shuffle=False):
         """
-        Method that samples indexes and reshapes the resulting array to num_batches x batch_size.
+        Lists indices for each batch.
         :param num_items: number of items to sample from
         :param batch_size: current batch size
-        :return: sampled indices with second dimension equal to batch_size
+        :param shuffle: shuffles indices
+        :return: list of batch indices
         """
-        num_items_reduced = (num_items // batch_size) * batch_size
+        num_items_full_batches = (num_items // batch_size) * batch_size
 
-        indices = cupy.random.choice(num_items, num_items, replace=False)
-        batch_indices = list(cupy.reshape(indices[:num_items_reduced], (-1, batch_size)))
+        indices = cupy.random.choice(num_items, num_items, replace=False) if shuffle else cupy.arange(num_items)
 
-        if num_items > num_items_reduced:
-            batch_indices += [indices[num_items_reduced:]]
+        batch_indices = list(cupy.reshape(indices[:num_items_full_batches], (-1, batch_size)))
+
+        if num_items > num_items_full_batches:
+            batch_indices += [indices[num_items_full_batches:]]
 
         return batch_indices
