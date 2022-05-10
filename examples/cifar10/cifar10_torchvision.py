@@ -1,5 +1,6 @@
 from time import time
 
+import numpy as np
 import torch
 from torch.utils.data import DataLoader
 from torchvision.datasets import CIFAR10
@@ -45,7 +46,7 @@ def train_model(model, dataloaders, criterion, optimizer, num_epochs):
 
                 # statistics
                 running_loss += loss.item() * inputs.size(0)
-                running_corrects += torch.sum(preds == labels.data)
+                running_corrects += torch.sum(preds == labels.data).item()
 
             num_items = len(dataloaders[phase].dataset)
             epoch_loss = running_loss / num_items
@@ -60,13 +61,14 @@ def train_model(model, dataloaders, criterion, optimizer, num_epochs):
                 val_acc_history.append(epoch_acc)
 
     time_elapsed = time() - training_start
-    print('Training complete in {:.0f}m {:.0f}s'.format(time_elapsed // 60, time_elapsed % 60))
-    print('Best val Acc: {:.2f}%'.format(100*max(val_acc_history)))
+    print(f'Training complete in {time_elapsed // 60:.0f}m {time_elapsed % 60:.0f}s')
+    print(f'Best val Acc: {100*np.max(val_acc_history):.2f}%')
 
-    return val_acc_history
+    return 100 * np.max(val_acc_history), time_elapsed
 
 
 if __name__ == '__main__':
+    num_runs = 10
     num_workers = 4
     mean = (0.4914, 0.4822, 0.4465)
     std = (0.2471, 0.2435, 0.2616)
@@ -95,16 +97,27 @@ if __name__ == '__main__':
                           pin_memory=True)
     }
 
-    model = vgg11_bn(num_classes=10)
-    model.cuda()
+    res = []
 
-    criterion = torch.nn.CrossEntropyLoss()
-    optimizer = torch.optim.SGD(model.parameters(), lr=0.001, momentum=0.9)
+    for _ in range(num_runs):
+        model = vgg11_bn(num_classes=10)
+        model.cuda()
 
-    train_model(
-        model=model,
-        dataloaders=dataloaders,
-        criterion=criterion,
-        optimizer=optimizer,
-        num_epochs=10
-    )
+        criterion = torch.nn.CrossEntropyLoss()
+        optimizer = torch.optim.SGD(model.parameters(), lr=0.001, momentum=0.9)
+
+        res.append(
+            train_model(
+                model=model,
+                dataloaders=dataloaders,
+                criterion=criterion,
+                optimizer=optimizer,
+                num_epochs=10
+            )
+        )
+
+    val_accs = [r[0] for r in res]
+    times = [r[1] for r in res]
+
+    print(f'Validation accuracy: {np.mean(val_accs):.2f} +- {np.std(val_accs):.2f}')
+    print(f'Training time: {np.mean(times):.2f} +- {np.std(times):.2f}')

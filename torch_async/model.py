@@ -1,4 +1,5 @@
 import warnings
+from datetime import datetime
 
 from torch.nn import Module
 from enum import Enum
@@ -388,7 +389,7 @@ class Model(Module):
                       f'validation accuracy: {100 * num_correct / num_items:.2f}% ({duration:.2f}s '
                       f'for {num_items:,} samples {num_items/duration:,.0} fps)', flush=True)
 
-                val_acc_history.append(100 * num_correct / num_items)
+                val_acc_history.append(num_correct / num_items)
             elif action == Phase.TRAIN or action == Phase.VALID:
                 gpu_buffer_index = gpu_buffer_index_queue_object.index
 
@@ -402,8 +403,13 @@ class Model(Module):
 
             elif action == Phase.TRAIN_END:
                 time_elapsed = time() - training_start
-                print('Training complete in {:.0f}m {:.0f}s'.format(time_elapsed // 60, time_elapsed % 60))
-                print('Best val Acc: {:.2f}%'.format(100 * max(val_acc_history)))
+                print(f'Training complete in {time_elapsed // 60:.0f}m {time_elapsed % 60:.0f}s')
+                print(f'Best val Acc: {100*np.max(val_acc_history):.2f}%')
+
+                with open(f"torchasync-{datetime.now().strftime('%H:%M:%S')}.txt", 'wt') as fp:
+                    fp.write(f'{100*np.max(val_acc_history)}, {time_elapsed}\n')
+
+                break
 
     def gpu_processing(self, action, gpu_buffer_index, batch_size):
         """
@@ -419,8 +425,6 @@ class Model(Module):
 
         total_loss = 0
         num_correct = 0
-
-        # print('DEBUG: gpu_processing, self.training =', [[m.training for m in module.children()] for module in self.children()])
 
         for index in indices:
             index = as_tensor(index, device=device('cuda'))
@@ -441,7 +445,7 @@ class Model(Module):
 
             # statistics
             total_loss += loss.item() * features.size(0)
-            num_correct += torch.sum(preds == labels)
+            num_correct += torch.sum(preds == labels).item()
 
         return num_items, total_loss, num_correct
 

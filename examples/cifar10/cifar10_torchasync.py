@@ -73,17 +73,20 @@ class CIFAR10ChunkDataloader(ChunkDataloader):
 
 
 if __name__ == '__main__':
+    num_runs = 10
+
     mp.set_start_method('spawn')
 
     train_dataloader = CIFAR10ChunkDataloader(train=True)
     valid_dataloader = CIFAR10ChunkDataloader(train=False)
 
-    model = VGG11Async(num_classes=10)
-    model.cuda()
+    for _ in range(num_runs):
+        model = VGG11Async(num_classes=10)
+        model.cuda()
 
-    criterion = torch.nn.CrossEntropyLoss()
-    optimizer = torch.optim.SGD(model.parameters(), lr=0.001, momentum=0.9)
+        criterion = torch.nn.CrossEntropyLoss()
+        optimizer = torch.optim.SGD(model.parameters(), lr=0.001, momentum=0.9)
 
-    model.compile(optimizer, criterion)
+        model.compile(optimizer, criterion)
 
-    model.fit(train_dataloader=train_dataloader, epochs=10, valid_dataloader=valid_dataloader, batch_size=64)
+        model.fit(train_dataloader=train_dataloader, epochs=10, valid_dataloader=valid_dataloader, batch_size=64)
