@@ -1,4 +1,5 @@
 import warnings
+from datetime import datetime
 
 from torch.nn import Module
 from enum import Enum
@@ -37,8 +38,6 @@ class Phase(Enum):
     VALID_EPOCH_END = 10
 
 
-# TODO: add example from MNIST /ImageNet... and benchmark vs vanilla torch-vision
-# TODO: child processes might not exit nicely from keyboard interrupt
 class Model(Module):
     """
     Class designed to manage model training, derives from PyTorch's `Module` class.
@@ -71,6 +70,7 @@ class Model(Module):
         self.end_epoch_queue = None
 
         self.num_buffers = dict()
+        self.buffer_dtypes = dict()
         self.buffer = dict()
 
         # TODO: might not be necessary. To be tested and removed if found unnecessary
@@ -78,7 +78,8 @@ class Model(Module):
 
     def compile(self, optimizer: Optimizer, loss: _Loss, metrics: Optional[List[Callable]] = None):
         """
-        Define the optimizer, loss and metrics used for training. The optimizer needs to be initialized with the model's parameters before being passed as a parameter to `compile`.
+        Defines the optimizer, loss and metrics used for training. The optimizer needs to be initialized
+        with the model's parameters before being passed as a parameter to `compile`.
         :param optimizer: optimizer for the model training
         :param loss: loss function for the model training
         :param metrics: list of metrics to be used for validation
@@ -102,7 +103,10 @@ class Model(Module):
             num_cpu_buffers: int = 4,
             num_gpu_buffers: int = 4,
             cpu_sample_size=None,
-            gpu_sample_size=None):
+            gpu_sample_size=None,
+            cpu_dtypes=(torch.uint8, torch.int64),
+            gpu_dtypes=(torch.uint8, torch.int64)
+            ):
         """
         The `fit` method is used to train the model using the provided dataloaders and training parameters.
         :param train_dataloader: dataloader for training data
@@ -117,10 +121,14 @@ class Model(Module):
         :param num_gpu_buffers: number of data chunks to simultaneously keep in GPU memory
         :param cpu_sample_size: size of a sample in CPU memory
         :param gpu_sample_size: size of a sample in GPU memory
+        :param cpu_dtypes: data types for (features, labels) on CPU
+        :param gpu_dtypes: data types for (features, labels) on GPU
         """
         if callbacks is not None or transform is not None:
             warnings.WarningMessage('Callbacks and transforms are not yet supported')
-
+        if self.optimizer is None or self.loss_function is None:
+            raise RuntimeError('You must set the optimizer and loss function via the `compile` method` '
+                               'before calling the `fit` method.')
         self.train_dataloader = train_dataloader
         self.valid_dataloader = valid_dataloader
         self.epochs = epochs
@@ -134,23 +142,28 @@ class Model(Module):
         self.num_buffers['cpu'] = num_cpu_buffers
         self.num_buffers['cuda'] = num_gpu_buffers
 
+        self.buffer_dtypes['cpu'] = cpu_dtypes
+        self.buffer_dtypes['cuda'] = gpu_dtypes
+
         for data_type in ['features', 'num_samples', 'labels']:
             self.buffer[data_type] = dict()
 
         for buffer_device in ['cpu', 'cuda']:
+            features_dtype, labels_dtype = self.buffer_dtypes[buffer_device]
+
             self.buffer['features'][buffer_device] = self.create_buffer(buffer_size=self.num_buffers[buffer_device],
                                                                         chunk_size=(max_samples_per_buffer, sample_size),
-                                                                        dtype=torch.uint8,
+                                                                        dtype=features_dtype,
                                                                         device=device(buffer_device))
             self.buffer['num_samples'][buffer_device] = self.create_buffer(buffer_size=self.num_buffers[buffer_device],
                                                                            chunk_size=(1,),
-                                                                           dtype=torch.int32,
-                                                                           device=device(buffer_device))
+                                                                           dtype=labels_dtype,
+                                                                           device=device('cpu'))
             self.buffer['labels'][buffer_device] = self.create_buffer(buffer_size=self.num_buffers[buffer_device],
-                                                                      chunk_size=(max_samples_per_buffer, 1),
-                                                                      dtype=torch.uint8,
+                                                                      chunk_size=(max_samples_per_buffer,),
+                                                                      dtype=torch.int64,
                                                                       device=device(buffer_device))
-
+        # TODO: test pipes instead
         self.file_index_queue = mp.Queue()
         self.free_cpu_buffer_index_queue = mp.Queue()
         self.process_cpu_buffer_index_queue = mp.Queue()
@@ -170,6 +183,10 @@ class Model(Module):
         :return buffer
         """
         buffer = [torch.empty(size=chunk_size, dtype=dtype).to(device) for _ in range(buffer_size)]
+
+        if device.type == 'cpu':
+            [tensor.pin_memory() for tensor in buffer]
+
         # TODO: might not be necessary. To be tested and removed if found unnecessary
         [tensor.share_memory_() for tensor in buffer]
 
@@ -280,7 +297,7 @@ class Model(Module):
 
         self.buffer['num_samples']['cpu'][buffer_index][0] = num_items
         self.buffer['features']['cpu'][buffer_index][:num_items, :] = from_numpy(features)
-        self.buffer['labels']['cpu'][buffer_index][:num_items, :] = from_numpy(labels)
+        self.buffer['labels']['cpu'][buffer_index][:num_items] = from_numpy(labels)
 
     def device_transfer(self):
         """
@@ -315,13 +332,13 @@ class Model(Module):
         :param gpu_buffer_index: index of the GPU buffer to move to
         :return:
         """
-        num_items = self.buffer['num_samples']['cpu'][cpu_buffer_index][0]
+        num_items = self.buffer['num_samples']['cpu'][cpu_buffer_index].item()
 
         self.buffer['num_samples']['cuda'][gpu_buffer_index][0] = num_items
         self.buffer['features']['cuda'][gpu_buffer_index][:num_items, :] = \
             self.buffer['features']['cpu'][cpu_buffer_index][:num_items, :].cuda()
-        self.buffer['labels']['cuda'][gpu_buffer_index][:num_items, :] = \
-            self.buffer['labels']['cpu'][cpu_buffer_index][:num_items, :].cuda()
+        self.buffer['labels']['cuda'][gpu_buffer_index][:num_items] = \
+            self.buffer['labels']['cpu'][cpu_buffer_index][:num_items].cuda()
 
     def training_loop(self):
         """
@@ -336,6 +353,9 @@ class Model(Module):
         num_items = 0
         total_loss = 0
         num_correct = 0
+
+        val_acc_history = []
+        training_start = time()
 
         while True:
             gpu_buffer_index_queue_object = self.process_gpu_buffer_index_queue.get()
@@ -354,7 +374,8 @@ class Model(Module):
                     self.eval()
             elif action == Phase.TRAIN_EPOCH_END:
                 duration = time()-start
-                print(f'Epoch {epoch}, training loss: {total_loss / num_items:.4f} ({duration:.2f}s '
+                print(f'Epoch {epoch}, training loss: {total_loss / num_items:.4f} '
+                      f'training accuracy: {100 * num_correct / num_items:.2f}% ({duration:.2f}s '
                       f'for {num_items:,} samples, {num_items/duration:,.0} fps)', flush=True)
 
                 # TODO: add ceiling for batch size and decrease lr instead
@@ -369,8 +390,10 @@ class Model(Module):
             elif action == Phase.VALID_EPOCH_END:
                 duration = time() - start
                 print(f'Epoch {epoch}, validation loss: {total_loss / num_items:.4f}, '
-                      f'validation accuracy: {100 * num_correct / num_items:.2f} ({duration:.2f}s '
+                      f'validation accuracy: {100 * num_correct / num_items:.2f}% ({duration:.2f}s '
                       f'for {num_items:,} samples {num_items/duration:,.0} fps)', flush=True)
+
+                val_acc_history.append(num_correct / num_items)
             elif action == Phase.TRAIN or action == Phase.VALID:
                 gpu_buffer_index = gpu_buffer_index_queue_object.index
 
@@ -381,7 +404,15 @@ class Model(Module):
                 num_correct += num_correct_chunk
 
                 self.free_gpu_buffer_index_queue.put(gpu_buffer_index)
+
             elif action == Phase.TRAIN_END:
+                time_elapsed = time() - training_start
+                print(f'Training complete in {time_elapsed // 60:.0f}m {time_elapsed % 60:.0f}s')
+                print(f'Best val Acc: {100*np.max(val_acc_history):.2f}%')
+
+                with open(f"torchasync-{datetime.now().strftime('%H:%M:%S')}.txt", 'wt') as fp:
+                    fp.write(f'{100*np.max(val_acc_history)}, {time_elapsed}\n')
+
                 break
 
     def gpu_processing(self, action, gpu_buffer_index, batch_size):
@@ -392,8 +423,9 @@ class Model(Module):
         :param batch_size: current batch size
         :return:
         """
+        is_training = action == Phase.TRAIN
         num_items = self.buffer['num_samples']['cuda'][gpu_buffer_index].item()
-        indices = self.shuffled_indices(num_items, batch_size)
+        indices = self.batch_indices(num_items, batch_size, shuffle=is_training)
 
         total_loss = 0
         num_correct = 0
@@ -401,39 +433,42 @@ class Model(Module):
         for index in indices:
             index = as_tensor(index, device=device('cuda'))
 
-            features = self.buffer['features']['cuda'][gpu_buffer_index][index]
-            features = as_tensor(cupy.unpackbits(cupy.asarray(features))
-                                       .reshape(features.shape[0], -1), device=device('cuda')).float()
-            labels = self.buffer['labels']['cuda'][gpu_buffer_index][index].float()
+            features = self.buffer['features']['cuda'][gpu_buffer_index][index].float()
+            labels = self.buffer['labels']['cuda'][gpu_buffer_index][index]
+
+            self.optimizer.zero_grad()
 
             outputs = self(features)
             loss = self.loss_function(outputs, labels)
 
-            total_loss += loss.item() * len(labels)
+            _, preds = torch.max(outputs, 1)
 
-            if action == Phase.TRAIN:
-                self.optimizer.zero_grad()
+            if is_training:
                 loss.backward()
                 self.optimizer.step()
-            elif action == Phase.VALID:
-                num_correct += ((outputs > 0.5).float() == labels).sum().float().item()
+
+            # statistics
+            total_loss += loss.item() * features.size(0)
+            num_correct += torch.sum(preds == labels).item()
 
         return num_items, total_loss, num_correct
 
     @staticmethod
-    def shuffled_indices(num_items, batch_size):
+    def batch_indices(num_items, batch_size, shuffle=False):
         """
-        Method that samples indexes and reshapes the resulting array to num_batches x batch_size.
+        Lists indices for each batch.
         :param num_items: number of items to sample from
         :param batch_size: current batch size
-        :return: sampled indices with second dimension equal to batch_size
+        :param shuffle: shuffles indices
+        :return: list of batch indices
         """
-        num_items_reduced = (num_items // batch_size) * batch_size
+        num_items_full_batches = (num_items // batch_size) * batch_size
 
-        indices = cupy.random.choice(num_items, num_items, replace=False)
-        batch_indices = list(cupy.reshape(indices[:num_items_reduced], (-1, batch_size)))
+        indices = cupy.random.choice(num_items, num_items, replace=False) if shuffle else cupy.arange(num_items)
 
-        if num_items > num_items_reduced:
-            batch_indices += [indices[num_items_reduced:]]
+        batch_indices = list(cupy.reshape(indices[:num_items_full_batches], (-1, batch_size)))
+
+        if num_items > num_items_full_batches:
+            batch_indices += [indices[num_items_full_batches:]]
 
         return batch_indices

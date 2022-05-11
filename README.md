@@ -102,12 +102,25 @@ model.fit(train_dataloader,
 ```
 ## 5. Examples
 
-to be fixed in issue #3
+to be added in issue #3
+
+### 5.1 CIFAR-10
+
+The code located [here](examples/cifar10/cifar10_torchasync.py) shows how to train a VGG model on the CIFAR-10 dataset using torch-async. 
+The standard PyTorch implementation is provided for comparison [here](examples/cifar10/cifar10_torchvision.py).
+Since CIFAR-10 is a very small dataset, it is pre-loaded to CPU memory by the corresponding PyTorch `Dataset` subclass so the standard training loop is already very fast (torch-async is intended for cases where the dataset is too large to be loaded to memory).
+
+The following table shows the training time differences between the standard training loop and torch-async for 10 epochs of VGG-11-BN on CIFAR-10:
+
+| Implementation | Duration |
+|----------------|----------|
+| standard loop | 181.69 +- 0.83 s |
+| torch-async | 171.79 +- 7.82 |
 
 ## 6. Known issues
 
 - child processes might not exit nicely from keyboard interrupt
 - no support for callbacks (issue #5)
 - no implementation of predict and evaluate functions
-- no support for memory pinning (both CPU and GPU)
+- no support for memory pre-loading (both CPU and GPU)
 - no support for resuming from existing checkpoint
