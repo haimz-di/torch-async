@@ -97,7 +97,8 @@ if __name__ == '__main__':
                           pin_memory=True)
     }
 
-    res = []
+    best_val_acc = []
+    training_time = []
 
     for _ in range(num_runs):
         model = vgg11_bn(num_classes=10)
@@ -106,18 +107,16 @@ if __name__ == '__main__':
         criterion = torch.nn.CrossEntropyLoss()
         optimizer = torch.optim.SGD(model.parameters(), lr=0.001, momentum=0.9)
 
-        res.append(
-            train_model(
-                model=model,
-                dataloaders=dataloaders,
-                criterion=criterion,
-                optimizer=optimizer,
-                num_epochs=10
-            )
+        results = train_model(
+            model=model,
+            dataloaders=dataloaders,
+            criterion=criterion,
+            optimizer=optimizer,
+            num_epochs=10
         )
 
-    val_accs = [r[0] for r in res]
-    times = [r[1] for r in res]
+        best_val_acc.append(results[0])
+        training_time.append(results[1])
 
-    print(f'Validation accuracy: {np.mean(val_accs):.2f} +- {np.std(val_accs):.2f}')
-    print(f'Training time: {np.mean(times):.2f} +- {np.std(times):.2f}')
+    print(f'Validation accuracy: {np.mean(best_val_acc):.2f} +- {np.std(best_val_acc):.2f}')
+    print(f'Training time: {np.mean(training_time):.2f} +- {np.std(training_time):.2f}')

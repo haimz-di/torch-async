@@ -1,4 +1,5 @@
 import sys
+from glob import glob
 
 import torch
 
@@ -90,3 +91,16 @@ if __name__ == '__main__':
         model.compile(optimizer, criterion)
 
         model.fit(train_dataloader=train_dataloader, epochs=10, valid_dataloader=valid_dataloader, batch_size=64)
+
+    best_val_acc = []
+    training_time = []
+
+    for file_path in glob('torchasync-*.txt'):
+        with open(file_path, 'rt') as fp:
+            result = [float(val.strip()) for val in fp.read().split(',')]
+
+            best_val_acc.append(result[0])
+            training_time.append(result[1])
+
+    print(f'Validation accuracy: {np.mean(best_val_acc):.2f} +- {np.std(best_val_acc):.2f}')
+    print(f'Training time: {np.mean(training_time):.2f} +- {np.std(training_time):.2f}')

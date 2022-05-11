@@ -163,7 +163,7 @@ class Model(Module):
                                                                       chunk_size=(max_samples_per_buffer,),
                                                                       dtype=torch.int64,
                                                                       device=device(buffer_device))
-
+        # TODO: test pipes instead
         self.file_index_queue = mp.Queue()
         self.free_cpu_buffer_index_queue = mp.Queue()
         self.process_cpu_buffer_index_queue = mp.Queue()
@@ -183,6 +183,10 @@ class Model(Module):
         :return buffer
         """
         buffer = [torch.empty(size=chunk_size, dtype=dtype).to(device) for _ in range(buffer_size)]
+
+        if device.type == 'cpu':
+            [tensor.pin_memory() for tensor in buffer]
+
         # TODO: might not be necessary. To be tested and removed if found unnecessary
         [tensor.share_memory_() for tensor in buffer]
 
