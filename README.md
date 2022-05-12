@@ -112,10 +112,10 @@ Since CIFAR-10 is a very small dataset, it is pre-loaded to CPU memory by the co
 
 The following table shows the training time differences between the standard training loop and torch-async for 10 epochs of VGG-11-BN on CIFAR-10:
 
-| Implementation | Duration |
-|----------------|----------|
-| standard loop | 181.69 +- 0.83 s |
-| torch-async | 171.79 +- 7.82 |
+| Implementation | Duration         |
+|----------------|------------------|
+| standard loop | 177.12 +- 0.16 s |
+| torch-async | 170.28 +- 0.43   |
 
 ## 6. Known issues
 
