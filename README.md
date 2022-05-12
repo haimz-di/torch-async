@@ -115,7 +115,7 @@ The following table shows the training time differences between the standard tra
 | Implementation | Duration         |
 |----------------|------------------|
 | standard loop | 177.12 +- 0.16 s |
-| torch-async | 170.28 +- 0.43   |
+| torch-async | 167.56 +- 0.78 s |
 
 ## 6. Known issues
 

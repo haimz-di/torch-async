@@ -5,7 +5,7 @@ from argparse import ArgumentParser
 
 import torch
 from torch.utils.data import DataLoader
-from torchvision.datasets import CIFAR10
+from torchvision.datasets import Country211
 from torchvision.models import vgg11_bn
 from torchvision import transforms
 
@@ -25,25 +25,15 @@ def parse_args():
 if __name__ == '__main__':
     args = parse_args()
 
-    mean = (0.4914, 0.4822, 0.4465)
-    std = (0.2471, 0.2435, 0.2616)
+    transform = transforms.Compose(
+        [
+            transforms.Resize((64, 64)),
+            transforms.ToTensor(),
+        ]
+    )
 
-    transform_train = transforms.Compose(
-        [
-            # transforms.RandomCrop(32, padding=4),
-            # transforms.RandomHorizontalFlip(),
-            transforms.ToTensor(),
-            # transforms.Normalize(mean, std),
-        ]
-    )
-    transform_valid = transforms.Compose(
-        [
-            transforms.ToTensor(),
-            # transforms.Normalize(mean, std),
-        ]
-    )
-    train_dataset = CIFAR10(root='./data', train=True, transform=transform_train, download=True)
-    valid_dataset = CIFAR10(root='./data', train=False, transform=transform_valid, download=True)
+    train_dataset = Country211(root='./data', split='train', transform=transform, download=True)
+    valid_dataset = Country211(root='./data', split='valid', transform=transform, download=True)
 
     dataloaders = {
         'train': DataLoader(train_dataset, batch_size=args.batch_size, num_workers=args.num_workers, shuffle=True,
@@ -53,7 +43,7 @@ if __name__ == '__main__':
     }
 
     model_constructor = vgg11_bn
-    model_kwargs = {'num_classes': 10}
+    model_kwargs = {'num_classes': 211}
 
     criterion = torch.nn.CrossEntropyLoss()
     optimizer_constructor = torch.optim.SGD

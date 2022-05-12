@@ -1,11 +1,13 @@
 import sys
-from glob import glob
-
-import torch
-
 sys.path.insert(0, '../..')
 
 import multiprocessing as mp
+
+import torch
+from argparse import ArgumentParser
+
+from torch_async.utils.benchmarks.torch_async import run_benchmark
+
 import pickle
 
 import numpy as np
@@ -73,34 +75,41 @@ class CIFAR10ChunkDataloader(ChunkDataloader):
         return self.num_samples_
 
 
-if __name__ == '__main__':
-    num_runs = 10
+def parse_args():
+    parser = ArgumentParser()
+    parser.add_argument('--num-runs', type=int, default=10, help='Number of experiments to run')
+    parser.add_argument('--num-epochs', type=int, default=10, help='Number of epochs to run each experiment')
+    parser.add_argument('--batch-size', type=int, default=64, help='Batch size')
 
+    return parser.parse_args()
+
+
+if __name__ == '__main__':
+    # TODO: test solutions from https://github.com/pytorch/pytorch/issues/3492
     mp.set_start_method('spawn')
 
-    train_dataloader = CIFAR10ChunkDataloader(train=True)
-    valid_dataloader = CIFAR10ChunkDataloader(train=False)
+    args = parse_args()
 
-    for _ in range(num_runs):
-        model = VGG11Async(num_classes=10)
-        model.cuda()
+    dataloaders = {
+        'train': CIFAR10ChunkDataloader(train=True),
+        'val': CIFAR10ChunkDataloader(train=False)
+    }
 
-        criterion = torch.nn.CrossEntropyLoss()
-        optimizer = torch.optim.SGD(model.parameters(), lr=0.001, momentum=0.9)
+    model_constructor = VGG11Async
+    model_kwargs = {'num_classes': 10}
 
-        model.compile(optimizer, criterion)
+    criterion = torch.nn.CrossEntropyLoss()
 
-        model.fit(train_dataloader=train_dataloader, epochs=10, valid_dataloader=valid_dataloader, batch_size=64)
+    optimizer_constructor = torch.optim.SGD
+    optimizer_kwargs = {'lr': 0.001, 'momentum': 0.9}
 
-    best_val_acc = []
-    training_time = []
-
-    for file_path in glob('torchasync-*.txt'):
-        with open(file_path, 'rt') as fp:
-            result = [float(val.strip()) for val in fp.read().split(',')]
-
-            best_val_acc.append(result[0])
-            training_time.append(result[1])
-
-    print(f'Validation accuracy: {np.mean(best_val_acc):.2f} +- {np.std(best_val_acc):.2f}')
-    print(f'Training time: {np.mean(training_time):.2f} +- {np.std(training_time):.2f}')
+    run_benchmark(model_constructor=model_constructor,
+                  model_kwargs=model_kwargs,
+                  dataloaders=dataloaders,
+                  criterion=criterion,
+                  optimizer_constructor=optimizer_constructor,
+                  optimizer_kwargs=optimizer_kwargs,
+                  num_epochs=args.num_epochs,
+                  batch_size=args.batch_size,
+                  num_runs=args.num_runs
+                  )
