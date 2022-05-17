@@ -212,13 +212,13 @@ class Model(Module):
         for i in range(self.num_buffers['cuda']):
             self.free_gpu_buffer_index_queue.put(i)
 
-        data_loader_process = mp.Process(target=self.data_loader)
+        data_loader_process = mp.Process(target=self.data_loader, daemon=True)
         data_loader_process.start()
 
-        data_mover_process = mp.Process(target=self.device_transfer)
+        data_mover_process = mp.Process(target=self.device_transfer, daemon=True)
         data_mover_process.start()
 
-        training_loop_process = mp.Process(target=self.training_loop)
+        training_loop_process = mp.Process(target=self.training_loop, daemon=True)
         training_loop_process.start()
 
         start = time()
